@@ -1,0 +1,27 @@
+services:
+  techcorp-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      TECHCORP_DB_PATH: /app/techcorp_db.sqlite
+      TECHCORP_LOG_LEVEL: INFO
+      TECHCORP_API_HOST: 0.0.0.0
+      TECHCORP_API_PORT: 8000
+      TECHCORP_CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:8000
+      TECHCORP_REQUEST_TIMEOUT_SECONDS: 10.0
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
