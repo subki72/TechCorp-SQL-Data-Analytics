@@ -170,7 +170,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         target_db = Path(settings.db_path)
         if settings.db_path != ":memory:" and not target_db.exists():
-            initialize_database(settings.db_path, seed=True, timeout=settings.request_timeout_seconds)
+            initialize_database(
+                settings.db_path, seed=True, timeout=settings.request_timeout_seconds
+            )
         app = create_app(settings=settings)
         host = args.host or settings.api_host
         port = args.port or settings.api_port
