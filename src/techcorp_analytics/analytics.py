@@ -14,6 +14,18 @@ from techcorp_analytics.repository import validate_iso_date
 logger = logging.getLogger(__name__)
 
 
+def _serialize_project_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Normalize a project SQLite row into JSON-serializable fields."""
+    return {
+        "project_id": int(row["project_id"]),
+        "project_name": str(row["project_name"]),
+        "budget": round(float(row["budget"]), 2),
+        "start_date": str(row["start_date"]),
+        "end_date": str(row["end_date"]),
+        "department_name": str(row["department_name"]),
+    }
+
+
 class AnalyticsCache:
     """Thread-safe in-memory TTL cache for read-heavy analytics snapshots."""
 
@@ -96,46 +108,19 @@ class TechCorpAnalytics:
         *,
         inclusive: bool = False,
     ) -> list[dict[str, Any]]:
-        """Identify projects exceeding (or meeting) a budget threshold.
-
-        Args:
-            min_budget: Budget threshold in USD (must be >= 0).
-            inclusive: If True, uses ``>=`` comparison; defaults to strict ``>``.
-
-        Returns:
-            Matching projects ordered by budget descending.
-        """
+        """Identify projects exceeding (or meeting) a budget threshold."""
         if min_budget < 0:
             raise ValidationError(f"min_budget must be >= 0, got {min_budget}.")
 
         operator = ">=" if inclusive else ">"
-        rows = self._conn.execute(
-            f"""
-            SELECT
-                p.project_id,
-                p.project_name,
-                p.budget,
-                p.start_date,
-                p.end_date,
-                d.department_name
-            FROM Projects p
-            JOIN Departments d ON p.department_id = d.department_id
-            WHERE p.budget {operator} ?
-            ORDER BY p.budget DESC, p.project_id ASC;
-            """,
-            (float(min_budget),),
-        ).fetchall()
-        results = [
-            {
-                "project_id": int(row["project_id"]),
-                "project_name": str(row["project_name"]),
-                "budget": round(float(row["budget"]), 2),
-                "start_date": str(row["start_date"]),
-                "end_date": str(row["end_date"]),
-                "department_name": str(row["department_name"]),
-            }
-            for row in rows
-        ]
+        query = (
+            "SELECT p.project_id, p.project_name, p.budget, p.start_date, "
+            "p.end_date, d.department_name "
+            "FROM Projects p JOIN Departments d ON p.department_id = d.department_id "
+            f"WHERE p.budget {operator} ? ORDER BY p.budget DESC, p.project_id ASC;"
+        )
+        rows = self._conn.execute(query, (float(min_budget),)).fetchall()
+        results = [_serialize_project_row(row) for row in rows]
         logger.info(
             "Found %d high-value projects (min_budget=%.2f, inclusive=%s)",
             len(results),

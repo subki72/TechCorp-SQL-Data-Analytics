@@ -62,6 +62,25 @@ class ConflictError(TechCorpError):
     """Raised when an operation conflicts with uniqueness or referential state."""
 
 
+def _connect_sqlite(raw_path: str, *, read_only: bool, timeout: float) -> sqlite3.Connection:
+    """Create raw sqlite3 connection in read-only URI or read-write mode."""
+    if read_only:
+        if raw_path == ":memory:":
+            raise ValidationError("Read-only mode is not supported for ':memory:' databases.")
+        resolved = Path(raw_path).resolve()
+        if not resolved.exists():
+            raise FileNotFoundError(f"Database file not found: {resolved}")
+        return sqlite3.connect(
+            f"{resolved.as_uri()}?mode=ro",
+            uri=True,
+            timeout=timeout,
+            check_same_thread=False,
+        )
+    if raw_path != ":memory:":
+        Path(raw_path).parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(raw_path, timeout=timeout, check_same_thread=False)
+
+
 def open_connection(
     db_path: str | Path,
     *,
@@ -77,36 +96,11 @@ def open_connection(
 
     Returns:
         Configured ``sqlite3.Connection`` with ``sqlite3.Row`` row factory.
-
-    Raises:
-        ValidationError: If ``read_only=True`` is requested for ``":memory:"`` or timeout <= 0.
-        FileNotFoundError: If ``read_only=True`` and the database file does not exist.
     """
     if timeout <= 0:
         raise ValidationError(f"SQLite connection timeout must be positive, got {timeout}.")
 
-    raw_path = str(db_path)
-    if read_only:
-        if raw_path == ":memory:":
-            raise ValidationError("Read-only mode is not supported for ':memory:' databases.")
-        resolved = Path(raw_path).resolve()
-        if not resolved.exists():
-            raise FileNotFoundError(f"Database file not found: {resolved}")
-        conn = sqlite3.connect(
-            f"{resolved.as_uri()}?mode=ro",
-            uri=True,
-            timeout=timeout,
-            check_same_thread=False,
-        )
-    else:
-        if raw_path != ":memory:":
-            Path(raw_path).parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(
-            raw_path,
-            timeout=timeout,
-            check_same_thread=False,
-        )
-
+    conn = _connect_sqlite(str(db_path), read_only=read_only, timeout=timeout)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     fk_row = conn.execute("PRAGMA foreign_keys;").fetchone()
@@ -179,20 +173,36 @@ def apply_migrations(
     return applied
 
 
+def _insert_seed_batches(conn: sqlite3.Connection) -> None:
+    """Insert deterministic seed rows idempotently across all TechCorp tables."""
+    conn.executemany(
+        "INSERT OR IGNORE INTO Departments (department_id, department_name) VALUES (?, ?);",
+        SEED_DEPARTMENTS,
+    )
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO Employees (
+            employee_id, first_name, last_name, email, hire_date, department_id
+        ) VALUES (?, ?, ?, ?, ?, ?);
+        """,
+        SEED_EMPLOYEES,
+    )
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO Projects (
+            project_id, project_name, start_date, end_date, budget, department_id
+        ) VALUES (?, ?, ?, ?, ?, ?);
+        """,
+        SEED_PROJECTS,
+    )
+
+
 def seed_techcorp_data(
     conn: sqlite3.Connection,
     *,
     reset_existing: bool = False,
 ) -> dict[str, int]:
-    """Populate TechCorp tables idempotently with deterministic sample records.
-
-    Args:
-        conn: Open SQLite connection with schema already applied.
-        reset_existing: When True, clears existing rows in child-to-parent order first.
-
-    Returns:
-        Dictionary of row counts inserted for ``departments``, ``employees``, and ``projects``.
-    """
+    """Populate TechCorp tables idempotently with deterministic sample records."""
     conn.execute("PRAGMA foreign_keys = ON;")
     with conn:
         if reset_existing:
@@ -200,36 +210,10 @@ def seed_techcorp_data(
             conn.execute("DELETE FROM Employees;")
             conn.execute("DELETE FROM Departments;")
 
-        before_depts = _count_rows(conn, "Departments")
-        before_emps = _count_rows(conn, "Employees")
-        before_projs = _count_rows(conn, "Projects")
+        before = {tbl: _count_rows(conn, tbl) for tbl in REQUIRED_TABLES}
+        _insert_seed_batches(conn)
 
-        conn.executemany(
-            "INSERT OR IGNORE INTO Departments (department_id, department_name) VALUES (?, ?);",
-            SEED_DEPARTMENTS,
-        )
-        conn.executemany(
-            """
-            INSERT OR IGNORE INTO Employees (
-                employee_id, first_name, last_name, email, hire_date, department_id
-            ) VALUES (?, ?, ?, ?, ?, ?);
-            """,
-            SEED_EMPLOYEES,
-        )
-        conn.executemany(
-            """
-            INSERT OR IGNORE INTO Projects (
-                project_id, project_name, start_date, end_date, budget, department_id
-            ) VALUES (?, ?, ?, ?, ?, ?);
-            """,
-            SEED_PROJECTS,
-        )
-
-    inserted = {
-        "departments": _count_rows(conn, "Departments") - before_depts,
-        "employees": _count_rows(conn, "Employees") - before_emps,
-        "projects": _count_rows(conn, "Projects") - before_projs,
-    }
+    inserted = {tbl.lower(): _count_rows(conn, tbl) - before[tbl] for tbl in REQUIRED_TABLES}
     logger.info(
         "Seeded TechCorp database (departments=+%d, employees=+%d, projects=+%d)",
         inserted["departments"],
@@ -279,9 +263,7 @@ def verify_database_health(conn: sqlite3.Connection) -> dict[str, Any]:
     fk_row = conn.execute("PRAGMA foreign_keys;").fetchone()
     fk_enabled = bool(fk_row and int(fk_row[0]) == 1)
 
-    table_rows = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table';"
-    ).fetchall()
+    table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table';").fetchall()
     existing_tables = {str(row["name"]) for row in table_rows}
     missing = [tbl for tbl in REQUIRED_TABLES if tbl not in existing_tables]
     if missing:

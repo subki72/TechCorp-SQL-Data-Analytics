@@ -261,8 +261,8 @@ def _register_exception_handlers(app: FastAPI) -> None:
         )
 
 
-def _register_routes(app: FastAPI) -> None:
-    """Register REST endpoints delegating all SQL to analytics and repository layers."""
+def _register_ops_and_summary_routes(app: FastAPI) -> None:
+    """Register health probe and consolidated analytics endpoints."""
 
     @app.get("/health", response_model=HealthResponse, tags=["Operations"])
     def health_check(conn: DbDep, _: RateLimitDep) -> dict[str, Any]:
@@ -292,13 +292,16 @@ def _register_routes(app: FastAPI) -> None:
         if cached is not None:
             return dict(cached)
 
-        analytics = TechCorpAnalytics(conn)
-        summary = analytics.generate_full_summary(
+        summary = TechCorpAnalytics(conn).generate_full_summary(
             min_budget=min_budget,
             senior_cutoff=cutoff,
         )
         cache.set(cache_key, summary)
         return summary
+
+
+def _register_department_routes(app: FastAPI) -> None:
+    """Register department budget and headcount analytics endpoints."""
 
     @app.get(
         "/departments/budgets",
@@ -317,6 +320,10 @@ def _register_routes(app: FastAPI) -> None:
     def department_headcount(conn: DbDep, _: RateLimitDep) -> list[dict[str, Any]]:
         """Retrieve employee headcount distribution per department."""
         return TechCorpAnalytics(conn).headcount_by_department()
+
+
+def _register_project_and_governance_routes(app: FastAPI) -> None:
+    """Register project timeline, high-value, and governance analytics endpoints."""
 
     @app.get(
         "/projects/durations",
@@ -355,6 +362,10 @@ def _register_routes(app: FastAPI) -> None:
         cfg: Settings = request.app.state.settings
         cutoff = senior_cutoff or cfg.senior_cutoff_date
         return TechCorpAnalytics(conn).executive_governance_report(senior_cutoff=cutoff)
+
+
+def _register_lifecycle_routes(app: FastAPI) -> None:
+    """Register employee directory and transactional CRUD lifecycle endpoints."""
 
     @app.get("/employees", response_model=list[EmployeeItem], tags=["Directory"])
     def list_employees(
@@ -403,6 +414,14 @@ def _register_routes(app: FastAPI) -> None:
         TechCorpRepository(conn).offboard_employee(employee_id, raise_if_missing=True)
         request.app.state.cache.clear()
         return {"employee_id": employee_id, "offboarded": True}
+
+
+def _register_routes(app: FastAPI) -> None:
+    """Register all API route groups onto the FastAPI application."""
+    _register_ops_and_summary_routes(app)
+    _register_department_routes(app)
+    _register_project_and_governance_routes(app)
+    _register_lifecycle_routes(app)
 
 
 def create_app(
