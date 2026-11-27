@@ -32,9 +32,7 @@ def validate_iso_date(value: str, field_name: str) -> str:
     try:
         datetime.strptime(cleaned, "%Y-%m-%d")
     except ValueError as exc:
-        raise ValidationError(
-            f"{field_name} must use YYYY-MM-DD format, got {value!r}."
-        ) from exc
+        raise ValidationError(f"{field_name} must use YYYY-MM-DD format, got {value!r}.") from exc
     return cleaned
 
 
